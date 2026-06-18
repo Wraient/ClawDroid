@@ -37,6 +37,7 @@ import kotlinx.coroutines.launch
 import kotlin.coroutines.resume
 import kotlin.coroutines.suspendCoroutine
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.currentCoroutineContext
 import java.util.UUID
 
@@ -48,6 +49,7 @@ data class ChatUiState(
     val streamingSteps: List<ActivityStepItem> = emptyList(),
     val streamingMessageId: String? = null,
     val runtimeState: AgentRuntimeState = AgentRuntimeState.Idle,
+    val thinkingPhase: String = "Thinking",
     val input: String = "",
     val isCallModeActive: Boolean = false,
     val isCallMuted: Boolean = false,
@@ -252,7 +254,23 @@ class ChatViewModel(
                 isStreaming = true,
                 runtimeState = AgentRuntimeState.Running,
                 orbState = OrbState.Thinking,
+                thinkingPhase = "Analyzing",
             )
+            
+            // Rotate thinking phrases while agent is processing but no output yet
+            val thinkingPhrases = listOf(
+                "Analyzing", "Processing", "Thinking",
+                "Reasoning", "Computing", "Exploring",
+                "Synthesizing", "Formulating"
+            )
+            val thinkingJob = viewModelScope.launch {
+                var phraseIdx = 0
+                while (uiState.isStreaming && uiState.streamingText.isBlank() && uiState.streamingSteps.isEmpty()) {
+                    delay(1200)
+                    phraseIdx = (phraseIdx + 1) % thinkingPhrases.size
+                    uiState = uiState.copy(thinkingPhase = thinkingPhrases[phraseIdx])
+                }
+            }
 
             val conv = db.conversations().getById(convId)
             if (conv?.title == "New Agent Chat") {

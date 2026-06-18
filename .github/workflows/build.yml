@@ -1,0 +1,182 @@
+name: 🏗️ Build & Beta Release
+
+on:
+  push:
+    branches: [ main, develop ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      release_type:
+        description: 'Release type'
+        required: true
+        default: 'beta'
+        type: choice
+        options:
+          - beta
+          - alpha
+          - production
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: 🔨 Build APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: ☕ Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: gradle
+
+      - name: 🤖 Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: 📦 Accept Android SDK licenses
+        run: yes | $ANDROID_HOME/tools/bin/sdkmanager --licenses || true
+
+      - name: 🛠️ Create local.properties from secrets
+        run: |
+          cat > local.properties << 'LOCALEOF'
+          LLM_BASE_URL=${{ secrets.LLM_BASE_URL || 'https://api.siliconflow.com/v1' }}
+          LLM_MODEL=${{ secrets.LLM_MODEL || 'moonshotai/Kimi-K2.6' }}
+          LLM_API_KEY=${{ secrets.LLM_API_KEY || '' }}
+          LLM_PROVIDER=${{ secrets.LLM_PROVIDER || 'siliconflow' }}
+          OPENAI_REALTIME_API_KEY=${{ secrets.OPENAI_REALTIME_API_KEY || '' }}
+          GITHUB_OAUTH_CLIENT_ID=${{ secrets.GH_OAUTH_CLIENT_ID || '' }}
+          GITHUB_OAUTH_CLIENT_SECRET=${{ secrets.GH_OAUTH_CLIENT_SECRET || '' }}
+          GITHUB_OAUTH_TOKEN=${{ secrets.GH_OAUTH_TOKEN || '' }}
+          NOTION_OAUTH_CLIENT_ID=${{ secrets.NOTION_CLIENT_ID || '' }}
+          NOTION_OAUTH_CLIENT_SECRET=${{ secrets.NOTION_CLIENT_SECRET || '' }}
+          SPOTIFY_OAUTH_CLIENT_ID=${{ secrets.SPOTIFY_CLIENT_ID || '' }}
+          SPOTIFY_OAUTH_CLIENT_SECRET=${{ secrets.SPOTIFY_CLIENT_SECRET || '' }}
+          LOCALEOF
+          echo "✅ local.properties created"
+
+      - name: 🔧 Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: 🏗️ Build Debug APK
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
+        env:
+          CI: true
+
+      - name: 📤 Upload Debug APK as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ClawDroid-Debug-${{ github.sha }}
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          compression-level: 0
+
+      # --- Signing & Release Build (only when keystore secret exists) ---
+      - name: 🔐 Check if keystore is available
+        id: check_keystore
+        run: |
+          if [ -n "${{ secrets.KEYSTORE_BASE64 }}" ]; then
+            echo "available=true" >> $GITHUB_OUTPUT
+          else
+            echo "available=false" >> $GITHUB_OUTPUT
+          fi
+        shell: bash
+
+      - name: 🔐 Decode Keystore
+        if: steps.check_keystore.outputs.available == 'true'
+        run: |
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > app/keystore.jks
+
+      - name: 🏗️ Build Release APK (signed)
+        if: steps.check_keystore.outputs.available == 'true'
+        run: |
+          ./gradlew assembleRelease \
+            -Pandroid.injected.signing.store.file=app/keystore.jks \
+            -Pandroid.injected.signing.store.password=${{ secrets.KEYSTORE_PASSWORD }} \
+            -Pandroid.injected.signing.key.alias=${{ secrets.KEYSTORE_KEY_ALIAS }} \
+            -Pandroid.injected.signing.key.password=${{ secrets.KEYSTORE_KEY_PASSWORD }} \
+            --no-daemon --stacktrace
+
+      - name: 📤 Upload Release APK
+        if: steps.check_keystore.outputs.available == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ClawDroid-Release-${{ github.sha }}
+          path: app/build/outputs/apk/release/*.apk
+          if-no-files-found: warn
+          compression-level: 0
+
+      # --- Tag-based Release ---
+      - name: 🚀 Create GitHub Release (tag push)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ClawDroid ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
+          body: |
+            ## 🤖 ClawDroid ${{ github.ref_name }}
+
+            ### 📦 Downloads
+            - **Debug APK** — attached below (unsigned, for testing)
+            - **Release APK** — attached below (signed, production-ready)
+
+            ### 🆕 What's New
+            _Auto-generated from commits since last release._
+          draft: false
+          prerelease: ${{ contains(github.ref_name, 'beta') || contains(github.ref_name, 'alpha') }}
+          files: |
+            app/build/outputs/apk/debug/*.apk
+            app/build/outputs/apk/release/*.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # --- Manual Workflow Dispatch Release ---
+      - name: 🚀 Upload to Beta Release (workflow_dispatch)
+        if: github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: beta-${{ github.run_number }}-${{ github.sha }}
+          name: "Beta ${{ github.run_number }} (${{ inputs.release_type }})"
+          body: |
+            ## 🤖 ClawDroid Beta Build
+
+            - **Build**: #${{ github.run_number }}
+            - **Type**: ${{ inputs.release_type }}
+            - **Commit**: ${{ github.sha }}
+            - **Trigger**: Manual workflow dispatch
+          draft: true
+          prerelease: true
+          files: |
+            app/build/outputs/apk/debug/*.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 📊 Summary
+        if: always()
+        run: |
+          echo "## ✅ Build Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Status | Artifact |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|----------|" >> $GITHUB_STEP_SUMMARY
+          
+          if ls app/build/outputs/apk/debug/*.apk 1>/dev/null 2>&1; then
+            APK=$(ls -h app/build/outputs/apk/debug/*.apk 2>/dev/null | head -1)
+            SIZE=$(stat -c%s "$APK" 2>/dev/null | numfmt --to=iec 2>/dev/null || echo "?")
+            echo "| ✅ Debug APK | \`$(basename $APK)\` ($SIZE) |" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if ls app/build/outputs/apk/release/*.apk 1>/dev/null 2>&1; then
+            APK=$(ls -h app/build/outputs/apk/release/*.apk 2>/dev/null | head -1)
+            SIZE=$(stat -c%s "$APK" 2>/dev/null | numfmt --to=iec 2>/dev/null || echo "?")
+            echo "| ✅ Release APK | \`$(basename $APK)\` ($SIZE) |" >> $GITHUB_STEP_SUMMARY
+          fi

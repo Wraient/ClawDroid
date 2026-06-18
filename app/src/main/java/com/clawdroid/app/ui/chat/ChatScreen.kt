@@ -18,6 +18,12 @@ import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -1329,7 +1335,9 @@ private fun ActivityMessageCard(item: ActivityChatItem) {
     var previewFile by remember { mutableStateOf<FilePreview?>(null) }
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        if (item.steps.size == 1) {
+        if (item.steps.isEmpty() && item.running) {
+            ThinkingIndicator()
+        } else if (item.steps.size == 1) {
             InlineActivityStep(step = item.steps[0])
         } else {
             InlineActivityTrail(steps = item.steps, running = item.running)
@@ -1362,6 +1370,17 @@ private fun InlineActivityTrail(
         else -> "Preparing activity"
     }
 
+    // Pulsing animation for running state
+    val pulseTransition = rememberInfiniteTransition()
+    val pulseAlpha by pulseTransition.animateFloat(
+        initialValue = 0.5f,
+        targetValue = 1.0f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(900, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        )
+    )
+
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Surface(
             modifier = Modifier
@@ -1378,8 +1397,8 @@ private fun InlineActivityTrail(
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 Text(
-                    text = if (running) "Running ·" else "Done ·",
-                    color = if (running) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f),
+                    text = if (running) "● Running ·" else "✓ Done ·",
+                    color = if (running) MaterialTheme.colorScheme.primaryContainer.copy(alpha = pulseAlpha) else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f),
                     style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
                 )
                 Text(
@@ -1396,7 +1415,11 @@ private fun InlineActivityTrail(
             }
         }
 
-        AnimatedVisibility(visible = expanded && steps.isNotEmpty()) {
+        AnimatedVisibility(
+            visible = expanded && steps.isNotEmpty(),
+            enter = fadeIn(animationSpec = tween(300)) + slideInVertically { -it / 4 },
+            exit = fadeOut(animationSpec = tween(200)) + slideOutVertically { -it / 4 }
+        ) {
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(10.dp),
@@ -1405,7 +1428,15 @@ private fun InlineActivityTrail(
                 border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.85f)),
             ) {
                 Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    steps.takeLast(4).forEach { step -> InlineActivityStep(step) }
+                    steps.takeLast(4).forEachIndexed { index, step ->
+                        AnimatedVisibility(
+                            visible = true,
+                            enter = fadeIn(animationSpec = tween(400, delayMillis = index * 80)) + 
+                                    slideInVertically { it / 3 }
+                        ) {
+                            InlineActivityStep(step)
+                        }
+                    }
                 }
             }
         }
@@ -1415,20 +1446,55 @@ private fun InlineActivityTrail(
 @Composable
 private fun InlineActivityStep(step: ActivityStepItem) {
     var expanded by remember(step.running) { mutableStateOf(step.running) }
+    
+    // Pulsing animation for running step icon
+    val stepPulseTransition = rememberInfiniteTransition()
+    val stepPulseScale by stepPulseTransition.animateFloat(
+        initialValue = 1.0f,
+        targetValue = 1.25f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(700, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        )
+    )
+    val stepPulseAlpha by stepPulseTransition.animateFloat(
+        initialValue = 0.7f,
+        targetValue = 1.0f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(700, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        )
+    )
+    
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(8.dp))
             .clickable { expanded = !expanded }
-            .background(MaterialTheme.colorScheme.surfaceContainer)
+            .background(
+                if (step.running) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.12f * stepPulseAlpha)
+                else MaterialTheme.colorScheme.surfaceContainer
+            )
             .padding(horizontal = 14.dp, vertical = 11.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(text = step.type.icon, style = MaterialTheme.typography.labelLarge)
+            // Animated icon for running steps
+            if (step.running) {
+                Text(
+                    text = step.type.icon,
+                    style = MaterialTheme.typography.labelLarge,
+                    modifier = Modifier.graphicsLayer(
+                        scaleX = stepPulseScale,
+                        scaleY = stepPulseScale
+                    )
+                )
+            } else {
+                Text(text = step.type.icon, style = MaterialTheme.typography.labelLarge)
+            }
             Spacer(modifier = Modifier.width(10.dp))
             Text(
-                text = formatDiffDisplayText("${step.summary}${if (step.running) "…" else ""}"),
+                text = formatDiffDisplayText("$" + "{step.summary}" + "$" + "{if (step.running) "\u2026" else ""}"),
                 modifier = Modifier.weight(1f),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
@@ -1436,95 +1502,19 @@ private fun InlineActivityStep(step: ActivityStepItem) {
             if (step.isError) {
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
-                    text = "❌",
+                    text = "\u274c",
                     style = MaterialTheme.typography.labelLarge
                 )
             }
         }
         AnimatedVisibility(visible = expanded) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 4.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                val parsed = formatStepContent(step)
-
-                if (parsed.copyText != null || parsed.displayText.isNotEmpty()) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(
-                                MaterialTheme.colorScheme.surfaceContainerHigh,
-                                shape = RoundedCornerShape(6.dp)
-                            )
-                            .padding(horizontal = 10.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            if (parsed.title.isNotEmpty()) {
-                                Text(
-                                    text = parsed.title,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)
-                                )
-                                Spacer(modifier = Modifier.height(2.dp))
-                            }
-                            Text(
-                                text = formatDiffDisplayText(parsed.displayText),
-                                color = MaterialTheme.colorScheme.onSurface,
-                                style = MaterialTheme.typography.bodyMedium.copy(
-                                    fontFamily = FontFamily.Monospace,
-                                    fontSize = 13.sp
-                                ),
-                                maxLines = 2,
-                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
-                            )
-                        }
-                        if (parsed.copyText != null) {
-                            val clipboardManager = LocalClipboardManager.current
-                            val context = LocalContext.current
-                            IconButton(
-                                onClick = {
-                                    clipboardManager.setText(AnnotatedString(parsed.copyText))
-                                    Toast.makeText(context, "Copied to clipboard", Toast.LENGTH_SHORT).show()
-                                },
-                                modifier = Modifier.size(36.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Rounded.ContentCopy,
-                                    contentDescription = "Copy text",
-                                    modifier = Modifier.size(18.dp),
-                                    tint = MaterialTheme.colorScheme.primary
-                                )
-                            }
-                        }
-                    }
-                }
-
-                if (parsed.outputText.isNotEmpty()) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(max = 180.dp)
-                            .verticalScroll(rememberScrollState())
-                            .background(
-                                MaterialTheme.colorScheme.surfaceContainerLowest,
-                                shape = RoundedCornerShape(6.dp)
-                            )
-                            .padding(8.dp)
-                    ) {
-                        Text(
-                            text = formatDiffOutputText(parsed.outputText),
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            style = MaterialTheme.typography.bodyMedium.copy(
-                                fontFamily = FontFamily.Monospace,
-                                fontSize = 13.sp,
-                                lineHeight = 18.sp
-                            )
-                        )
-                    }
-                }
+            if (step.detail.isNotBlank()) {
+                Text(
+                    text = step.detail,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                    modifier = Modifier.padding(top = 4.dp)
+                )
             }
         }
     }
@@ -2741,6 +2731,74 @@ private fun AttachmentPreviewRow(
                     modifier = Modifier.size(12.dp)
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun ThinkingIndicator() {
+    // Animated thinking dots that bounce while agent is processing
+    val infiniteTransition = rememberInfiniteTransition()
+    val dot1Alpha by infiniteTransition.animateFloat(
+        initialValue = 0.3f,
+        targetValue = 1.0f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(600, delayMillis = 0, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        )
+    )
+    val dot2Alpha by infiniteTransition.animateFloat(
+        initialValue = 0.3f,
+        targetValue = 1.0f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(600, delayMillis = 200, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        )
+    )
+    val dot3Alpha by infiniteTransition.animateFloat(
+        initialValue = 0.3f,
+        targetValue = 1.0f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(600, delayMillis = 400, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        )
+    )
+
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.72f),
+        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.42f)),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text(
+                text = "Thinking",
+                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                text = "\u2022",
+                modifier = Modifier.graphicsLayer(alpha = dot1Alpha),
+                style = MaterialTheme.typography.titleLarge,
+                color = MaterialTheme.colorScheme.primaryContainer,
+            )
+            Text(
+                text = "\u2022",
+                modifier = Modifier.graphicsLayer(alpha = dot2Alpha),
+                style = MaterialTheme.typography.titleLarge,
+                color = MaterialTheme.colorScheme.primaryContainer,
+            )
+            Text(
+                text = "\u2022",
+                modifier = Modifier.graphicsLayer(alpha = dot3Alpha),
+                style = MaterialTheme.typography.titleLarge,
+                color = MaterialTheme.colorScheme.primaryContainer,
+            )
         }
     }
 }
